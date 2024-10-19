@@ -103,7 +103,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
     switch (reason) {
         case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
             // Get the full query string
-            char query_string[1024];  // Increased buffer size
+            char query_string[1024];
             int n = lws_hdr_copy_fragment(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS, 0);
             if (n <= 0) {
                 lwsl_err("Failed to get query string\n");
@@ -219,7 +219,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                             lwsl_err("Failed to allocate send buffer for client %d\n", clients[i]->client_id);
                             continue;
                         }
-                        memset(send_buffer, 0, LWS_PRE);  // 清零前缀
+                        memset(send_buffer, 0, LWS_PRE);
 
                         // 设置message_type为第一个字节
                         send_buffer[LWS_PRE] = pss->message_type;
@@ -236,7 +236,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                             lwsl_debug("Sent %d bytes to client %d\n", bytes, clients[i]->client_id);
                         }
 
-                        free(send_buffer);  // 释放发送缓冲区
+                        free(send_buffer);
                     }
                 }
 
