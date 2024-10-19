@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L  // 定义POSIX宏以启用strdup
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
