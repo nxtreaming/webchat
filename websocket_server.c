@@ -167,7 +167,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
             // Assign send_buffer to client
             clients[i]->send_buffer = send_buffer;
 
-            // We ALWAYS use biniay type to dispatch message.
+            // We ALWAYS use binary type to dispatch message.
             int send_type = LWS_WRITE_BINARY;
 
             // Send message
