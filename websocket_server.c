@@ -121,6 +121,9 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
+            // stored client_id, avoid extracting again in LWS_CALLBACK_ESTABLISHED
+            pss->client_id = client_id;
+
             // Allow connection
             break;
         }
@@ -137,22 +140,6 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             pss->message_type = 0;
             pss->wsi = wsi;
 
-            // Assign client_id from query
-            char query_string[1024];
-            int n = lws_hdr_copy_fragment(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS, 0);
-            if (n <= 0) {
-                lwsl_err("Failed to retrieve query string on established\n");
-                free(pss->buffer);
-                return -1;
-            }
-            pss->client_id = extract_client_id_from_query(query_string);
-            if (pss->client_id == -1) {
-                lwsl_err("Invalid client-id on established\n");
-                free(pss->buffer);
-                return -1;
-            }
-
-            // Add to clients array
             bool added = false;
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (!clients[i]) {
@@ -305,4 +292,3 @@ int main() {
     lwsl_notice("Server terminated gracefully\n");
     return 0;
 }
-
