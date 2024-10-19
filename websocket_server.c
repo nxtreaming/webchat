@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <libwebsockets.h>
 #include <signal.h>
+#include <pthread.h>
 
 #define MAX_CLIENTS 100
 #define INITIAL_BUFFER_SIZE 1024
@@ -11,6 +12,7 @@
 
 #define MESSAGE_TYPE_TEXT 0x01
 #define MESSAGE_TYPE_AUDIO 0x02
+#define BUFFER_POOL_SIZE 100
 
 struct ws_session {
     int client_id;
@@ -19,7 +21,14 @@ struct ws_session {
     size_t length;
     size_t size;
     unsigned char message_type;
+    unsigned char *send_buffer;  // the current buffer_pool pointer
 };
+
+struct buffer_pool {
+    unsigned char *buffers[BUFFER_POOL_SIZE];
+    int ref_count[BUFFER_POOL_SIZE];
+    pthread_mutex_t lock;
+} pool;
 
 static struct ws_session *clients[MAX_CLIENTS] = {0};
 static int force_exit = 0;
@@ -32,7 +41,7 @@ static void signal_handler(int sig) {
 // Extract client_id from query string
 static int extract_client_id_from_query(const char *query_string) {
     char *client_id_str = NULL;
-    char *query_copy = strdup(query_string);  // Make a copy of the query string
+    char *query_copy = strdup(query_string);
     if (!query_copy) {
         lwsl_err("strdup failed for query_string\n");
         return -1;
@@ -74,23 +83,107 @@ static int find_client_by_id(int client_id) {
     return -1;
 }
 
-// Extend buffer with growth factor
-static int extend_buffer(struct ws_session *pss, size_t additional_size) {
-    size_t required_size = pss->length + additional_size;
-    if (required_size > pss->size) {
-        size_t new_size = pss->size * 2;
-        while (new_size < required_size) {
-            new_size *= 2;
+// Initialize buffer pool
+static void init_buffer_pool() {
+    pthread_mutex_init(&pool.lock, NULL);
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        pool.buffers[i] = malloc(LWS_PRE + 1 + MAX_MESSAGE_SIZE);
+        if (!pool.buffers[i]) {
+            lwsl_err("Failed to allocate buffer pool\n");
+            exit(EXIT_FAILURE);
         }
-        unsigned char *new_buffer = realloc(pss->buffer, new_size);
-        if (!new_buffer) {
-            lwsl_err("Failed to extend buffer\n");
-            return -1;
-        }
-        pss->buffer = new_buffer;
-        pss->size = new_size;
+        pool.ref_count[i] = 0;
     }
-    return 0;
+}
+
+// Cleanup buffer pool
+static void cleanup_buffer_pool() {
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        free(pool.buffers[i]);
+    }
+    pthread_mutex_destroy(&pool.lock);
+}
+
+// Get a buffer from the pool
+static unsigned char *get_buffer_from_pool() {
+    pthread_mutex_lock(&pool.lock);
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        if (pool.ref_count[i] == 0) { // Available buffer
+            pool.ref_count[i] = 1;
+            pthread_mutex_unlock(&pool.lock);
+            return pool.buffers[i];
+        }
+    }
+    pthread_mutex_unlock(&pool.lock);
+    return NULL; // No available buffer
+}
+
+// Increase reference count
+static void add_ref_to_buffer(unsigned char *buffer) {
+    pthread_mutex_lock(&pool.lock);
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        if (pool.buffers[i] == buffer) {
+            pool.ref_count[i]++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&pool.lock);
+}
+
+// Release buffer (decrease reference count)
+static void release_buffer(unsigned char *buffer) {
+    pthread_mutex_lock(&pool.lock);
+    for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
+        if (pool.buffers[i] == buffer) {
+            pool.ref_count[i]--;
+            if (pool.ref_count[i] < 0)
+                pool.ref_count[i] = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&pool.lock);
+}
+
+// Broadcast message to other clients
+static void broadcast_message(struct ws_session *sender, unsigned char message_type, unsigned char *payload, size_t payload_len) {
+    unsigned char *send_buffer = get_buffer_from_pool();
+    if (!send_buffer) {
+        lwsl_err("No available buffers in pool\n");
+        return;
+    }
+
+    // Set message_type
+    send_buffer[LWS_PRE] = message_type;
+
+    // Copy payload
+    memcpy(send_buffer + LWS_PRE + 1, payload, payload_len);
+
+    // Iterate over clients and send message
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i] && clients[i]->client_id != sender->client_id) {
+            // Increase buffer reference count
+            add_ref_to_buffer(send_buffer);
+
+            // Assign send_buffer to client
+            clients[i]->send_buffer = send_buffer;
+
+            // We ALWAYS use biniay type to dispatch message.
+            int send_type = LWS_WRITE_BINARY;
+
+            // Send message
+            int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
+            if (bytes < (int)(1 + payload_len)) {
+                lwsl_err("Failed to send message to client %d\n", clients[i]->client_id);
+                release_buffer(send_buffer); // Release on failure
+                clients[i]->send_buffer = NULL;
+            } else {
+                // Request writeable callback to release buffer
+                lws_callback_on_writable(clients[i]->wsi);
+            }
+        }
+    }
+
+    // Buffer will be released in CLIENT_WRITEABLE callback
 }
 
 // WebSocket callback
@@ -121,7 +214,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
-            // stored client_id, avoid extracting again in LWS_CALLBACK_ESTABLISHED
+            // Store client_id in user data
             pss->client_id = client_id;
 
             // Allow connection
@@ -129,17 +222,15 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         }
 
         case LWS_CALLBACK_ESTABLISHED: {
-            // Allocate and initialize ws_session
-            pss->buffer = malloc(INITIAL_BUFFER_SIZE);
-            if (!pss->buffer) {
-                lwsl_err("Failed to allocate initial buffer\n");
-                return -1;
-            }
-            pss->size = INITIAL_BUFFER_SIZE;
+            // Initialize ws_session
+            pss->buffer = NULL; // Buffer will be allocated when receiving messages
+            pss->size = 0;
             pss->length = 0;
             pss->message_type = 0;
             pss->wsi = wsi;
+            pss->send_buffer = NULL;
 
+            // Add to clients array
             bool added = false;
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 if (!clients[i]) {
@@ -150,7 +241,6 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
             if (!added) {
                 lwsl_err("Max clients reached, closing connection\n");
-                free(pss->buffer);
                 return -1;
             }
 
@@ -165,9 +255,33 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
+            // Allocate buffer if necessary
+            if (pss->buffer == NULL) {
+                pss->buffer = malloc(INITIAL_BUFFER_SIZE);
+                if (!pss->buffer) {
+                    lwsl_err("Failed to allocate buffer\n");
+                    return -1;
+                }
+                pss->size = INITIAL_BUFFER_SIZE;
+                pss->length = 0;
+                pss->message_type = 0;
+            }
+
             // Extend buffer if necessary
-            if (extend_buffer(pss, len) < 0) {
-                return -1;
+            if (pss->length + len > pss->size) {
+                size_t new_size = pss->size * 2;
+                while (new_size < pss->length + len) {
+                    new_size *= 2;
+                }
+                unsigned char *new_buffer = realloc(pss->buffer, new_size);
+                if (!new_buffer) {
+                    lwsl_err("Failed to extend buffer\n");
+                    free(pss->buffer);
+                    pss->buffer = NULL;
+                    return -1;
+                }
+                pss->buffer = new_buffer;
+                pss->size = new_size;
             }
 
             // If first byte, set message_type
@@ -186,8 +300,17 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             if (lws_is_final_fragment(wsi)) {
                 if (pss->message_type == MESSAGE_TYPE_TEXT) {
                     // Ensure null-termination
-                    if (extend_buffer(pss, 1) < 0) {
-                        return -1;
+                    if (pss->length >= pss->size) {
+                        // Extend buffer for null-terminator
+                        unsigned char *new_buffer = realloc(pss->buffer, pss->size + 1);
+                        if (!new_buffer) {
+                            lwsl_err("Failed to extend buffer for null-termination\n");
+                            free(pss->buffer);
+                            pss->buffer = NULL;
+                            return -1;
+                        }
+                        pss->buffer = new_buffer;
+                        pss->size += 1;
                     }
                     pss->buffer[pss->length] = '\0';
                     lwsl_info("Received text from client %d: %s\n", pss->client_id, pss->buffer);
@@ -195,41 +318,23 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                     lwsl_info("Received audio from client %d, size: %zu bytes\n", pss->client_id, pss->length);
                 }
 
-                // Broadcast to other clients
-                for (int i = 0; i < MAX_CLIENTS; i++) {
-                    if (clients[i] && clients[i]->client_id != pss->client_id) {
-                        // 动态分配发送缓冲区，预留1字节用于message_type
-                        unsigned char *send_buffer = malloc(LWS_PRE + 1 + pss->length);
-                        if (!send_buffer) {
-                            lwsl_err("Failed to allocate send buffer for client %d\n", clients[i]->client_id);
-                            continue;
-                        }
-                        memset(send_buffer, 0, LWS_PRE);
-
-                        // 设置message_type为第一个字节
-                        send_buffer[LWS_PRE] = pss->message_type;
-
-                        // 复制payload到发送缓冲区
-                        memcpy(send_buffer + LWS_PRE + 1, pss->buffer, pss->length);
-
-                        // 发送消息
-                        int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + pss->length, 
-                                              pss->message_type == MESSAGE_TYPE_TEXT ? LWS_WRITE_TEXT : LWS_WRITE_BINARY);
-                        if (bytes < (int)(1 + pss->length)) {
-                            lwsl_err("Failed to send message to client %d\n", clients[i]->client_id);
-                        } else {
-                            lwsl_debug("Sent %d bytes to client %d\n", bytes, clients[i]->client_id);
-                        }
-
-                        free(send_buffer);
-                    }
-                }
+                // Broadcast message
+                broadcast_message(pss, pss->message_type, pss->buffer, pss->length);
 
                 // Reset buffer
                 pss->length = 0;
                 pss->message_type = 0;
             }
 
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_WRITEABLE: {
+            // Send completion callback
+            if (pss->send_buffer) {
+                release_buffer(pss->send_buffer);
+                pss->send_buffer = NULL;
+            }
             break;
         }
 
@@ -268,14 +373,17 @@ int main() {
     info.protocols = protocols;
     info.options = LWS_SERVER_OPTION_VALIDATE_UTF8; 
 
-    lws_set_log_level(LLL_NOTICE | LLL_ERR | LLL_WARN, NULL);
+    lws_set_log_level(LLL_NOTICE | LLL_ERR | LLL_WARN | LLL_INFO, NULL);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    init_buffer_pool();
+
     context = lws_create_context(&info);
     if (!context) {
         lwsl_err("Failed to create context\n");
+        cleanup_buffer_pool();
         return -1;
     }
 
@@ -290,5 +398,8 @@ int main() {
 
     lws_context_destroy(context);
     lwsl_notice("Server terminated gracefully\n");
+
+    cleanup_buffer_pool();
+
     return 0;
 }
