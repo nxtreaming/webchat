@@ -229,8 +229,8 @@
                     return;
                 }
 
-                // 验证文件大小（假设服务器允许1MB以内）
-                const MAX_AUDIO_SIZE = 1024 * 1024; // 1MB
+                // 验证文件大小（服务器允许2MB以内）
+                const MAX_AUDIO_SIZE = 1024 * 1024*2; // 2MB
                 if (file.size > MAX_AUDIO_SIZE) {
                     alert("Audio file is too large. Maximum size is 1MB.");
                     return;
