@@ -1,6 +1,6 @@
 # webchat
 
-# Compile
+Text and Audio chat based on websocket.  
 
 ## install 3rd package
 
