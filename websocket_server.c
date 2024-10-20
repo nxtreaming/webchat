@@ -287,6 +287,12 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             // If first byte, set message_type
             if (pss->message_type == 0 && pss->length == 0) {
                 pss->message_type = ((unsigned char *)in)[0];
+                if (pss->message_type != MESSAGE_TYPE_TEXT && pss->message_type != MESSAGE_TYPE_AUDIO) {
+                    const char *msg = "Unsupported message type";
+                    lwsl_err("%s\n", msg);
+                    lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,  (unsigned char *)msg, strlen(msg));
+                    return -1;
+                }
                 in = (unsigned char *)in + 1;
                 len -= 1;
                 if (len == 0) break;  // No data left after message_type
