@@ -15,5 +15,5 @@ ldconfig
 ## Compile  
 git clone https://github.com/nxtreaming/webchat.git  
 cd webchat   
-make
+make  
 ./websocket_server  
