@@ -98,7 +98,7 @@
             const serverAddress = window.location.hostname; // 当前主机名
             const serverPort = 8080; // 与服务器端一致
 
-            const wsUrl = `ws://${serverAddress}:${serverPort}/websocket-chat?client-id=${clientId}`;
+            const wsUrl = `ws://${serverAddress}:${serverPort}/websocket-chat?client-id=${clientId}&client-role=3`;
             console.log(`Connecting to WebSocket URL: ${wsUrl}`);
             ws = new WebSocket(wsUrl, "websocket-chat");
             ws.binaryType = 'arraybuffer'; // 接收二进制数据
