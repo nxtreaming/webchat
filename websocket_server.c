@@ -254,7 +254,8 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
         }
     }
 
-    // Buffer will be released in CLIENT_WRITEABLE callback
+    // **Release the initial reference after broadcasting to all clients**
+    release_buffer(send_buffer);
 }
 
 // WebSocket callback function
@@ -384,7 +385,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                         // Extend buffer for null-terminator
                         unsigned char *new_buffer = realloc(pss->buffer, pss->size + 1);
                         if (!new_buffer) {
-                            lwsl_err("Failed to extend buffer for null-termination\n");
+                            lwsl_err("Failed to extend buffer for null-terminator\n");
                             free(pss->buffer);
                             pss->buffer = NULL;
                             return -1;
