@@ -6,17 +6,17 @@
 #include <signal.h>
 #include <pthread.h>
 
-#define MAX_CLIENTS 100
+#define MAX_CLIENTS         100
 #define INITIAL_BUFFER_SIZE 1024
-#define MAX_MESSAGE_SIZE (1024 * 1024 * 2)  // 2MB
+#define MAX_MESSAGE_SIZE    (1024 * 1024 * 2)  // 2MB
 
-#define MESSAGE_TYPE_TEXT 0x01
-#define MESSAGE_TYPE_AUDIO 0x02
-#define BUFFER_POOL_SIZE 100
+#define MESSAGE_TYPE_TEXT   0x01
+#define MESSAGE_TYPE_AUDIO  0x02
+#define BUFFER_POOL_SIZE    100
 
-#define CLIENT_ROLE_HOST     0x01
-#define CLIENT_ROLE_LISTEN   0x02
-#define CLIENT_ROLE_NORMAL   0x04
+#define CLIENT_ROLE_HOST    0x01
+#define CLIENT_ROLE_LISTEN  0x02
+#define CLIENT_ROLE_NORMAL  0x04
 
 // Structure to represent a WebSocket session
 struct ws_session {
