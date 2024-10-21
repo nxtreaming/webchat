@@ -77,7 +77,7 @@ static int extract_client_role_from_query(const char *query_string) {
                 client_role = CLIENT_ROLE_HOST;
             else if (client_role == 2)
                 client_role = CLIENT_ROLE_LISTEN;
-            else if (client_role == 3) {
+            else if (client_role == 3) 
                 client_role = CLIENT_ROLE_NORMAL;
             else {
                 lwsl_err("Unsupported client-role: %d, roll back to 'normal role'\n", client_role);
