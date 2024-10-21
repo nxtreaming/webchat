@@ -14,8 +14,17 @@
 #define MESSAGE_TYPE_AUDIO 0x02
 #define BUFFER_POOL_SIZE 100
 
+#define CLIENT_ROLE_HOST            0x01
+#define CLIENT_ROLE_LISTEN          0x02
+#define CLIENT_ROLE_NORMAL      0x04
+
+// TODO:
+// message header:
+//    type + len + payload,
+
 struct ws_session {
     int client_id;
+    int client_role;
     struct lws *wsi;
     unsigned char *buffer;
     size_t length;
@@ -36,6 +45,51 @@ static int force_exit = 0;
 // Signal handler for graceful shutdown
 static void signal_handler(int sig) {
     force_exit = 1;
+}
+
+// Extract client_role from query string
+static int extract_client_role_from_query(const char *query_string) {
+    char *client_role_str = NULL;
+    char *query_copy = strdup(query_string);
+    if (!query_copy) {
+        lwsl_err("strdup failed for query_string\n");
+        return -1;
+    }
+
+    char *token = strtok(query_copy, "&");
+    while (token != NULL) {
+        if (strncmp(token, "client-role=", 12) == 0) {
+            client_role_str = token + 12;
+            break;
+        }
+        token = strtok(NULL, "&");
+    }
+
+    int client_role = CLIENT_ROLE_NORMAL;
+    if (client_role_str != NULL) {
+        client_role = atoi(client_role_str);
+        if (client_role <= 0) {
+            lwsl_err("Invalid client-role value: %s\n", client_role_str);
+            client_role = CLIENT_ROLE_NORMAL;
+        } else {
+            lwsl_notice("Parsed client-role: %d\n", client_role);
+            if (client_role == 1)
+                client_role = CLIENT_ROLE_HOST;
+            else if (client_role == 2)
+                client_role = CLIENT_ROLE_LISTEN;
+            else if (client_role == 3) {
+                client_role = CLIENT_ROLE_NORMAL;
+            else {
+                lwsl_err("Unsupported client-role: %d, roll back to 'normal role'\n", client_role);
+                client_role = CLIENT_ROLE_NORMAL;
+            }
+        }
+    } else {
+        lwsl_err("client-role parameter not found in query string\n");
+    }
+
+    free(query_copy);
+    return client_role;
 }
 
 // Extract client_id from query string
@@ -160,7 +214,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
 
     // Iterate over clients and send message
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i] && clients[i]->client_id != sender->client_id) {
+        if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             // Increase buffer reference count
             add_ref_to_buffer(send_buffer);
 
@@ -216,6 +270,9 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
 
             // Store client_id in user data
             pss->client_id = client_id;
+
+            // Store client_role in user data
+            pss->client_role = extract_client_role_from_query(query_string);
 
             // Allow connection
             break;
