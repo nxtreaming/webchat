@@ -232,14 +232,20 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     // Iterate over clients and send message
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
-            // Increase buffer reference count
-            add_ref_to_buffer(send_buffer);
+            // check and release the current send_buffer
+            if (clients[i]->send_buffer != NULL) {
+                release_buffer(clients[i]->send_buffer);
+                clients[i]->send_buffer = NULL;
+            }
 
             // Assign send_buffer to client
             clients[i]->send_buffer = send_buffer;
 
             // Always use binary type to dispatch message
             int send_type = LWS_WRITE_BINARY;
+
+            // Increase buffer reference count
+            add_ref_to_buffer(send_buffer);
 
             // Send message
             int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
@@ -254,7 +260,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
         }
     }
 
-    // **Release the initial reference after broadcasting to all clients**
+    // Release the initial reference after broadcasting to all clients
     release_buffer(send_buffer);
 }
 
@@ -382,10 +388,10 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 if (pss->message_type == MESSAGE_TYPE_TEXT) {
                     // Ensure null-termination
                     if (pss->length >= pss->size) {
-                        // Extend buffer for null-terminator
+                        // Extend buffer for null-termination
                         unsigned char *new_buffer = realloc(pss->buffer, pss->size + 1);
                         if (!new_buffer) {
-                            lwsl_err("Failed to extend buffer for null-terminator\n");
+                            lwsl_err("Failed to extend buffer for null-termination\n");
                             free(pss->buffer);
                             pss->buffer = NULL;
                             return -1;
