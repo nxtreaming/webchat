@@ -163,7 +163,7 @@ static unsigned char *get_buffer_from_pool() {
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.ref_count[i] == 0) { // Available buffer
             pool.ref_count[i] = 1;
-            lwsl_info("Allocated buffer %d from pool\n", i);
+            lwsl_debug("Allocated buffer %d from pool\n", i);
             pthread_mutex_unlock(&pool.lock);
             return pool.buffers[i];
         }
@@ -179,7 +179,7 @@ static void add_ref_to_buffer(unsigned char *buffer) {
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]++;
-            lwsl_info("Increased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+            lwsl_debug("Increased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             break;
         }
     }
@@ -194,7 +194,7 @@ static void release_buffer(unsigned char *buffer) {
             pool.ref_count[i]--;
             if (pool.ref_count[i] < 0)
                 pool.ref_count[i] = 0;
-            lwsl_info("Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+            lwsl_debug("Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             break;
         }
     }
@@ -213,7 +213,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
 
     if (target_clients == 0) {
         // No target clients, do not allocate buffer
-        lwsl_info("No target clients to broadcast message from client %d\n", sender->client_id);
+        lwsl_debug("No target clients to broadcast message from client %d\n", sender->client_id);
         return;
     }
 
