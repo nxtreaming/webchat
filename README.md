@@ -2,7 +2,7 @@
 
 Text and Audio chat based on websocket.  
 
-## install 3rd package
+## Install 3rd package
 
 git clone https://github.com/warmcat/libwebsockets.git  
 cd libswebsockets  
@@ -11,3 +11,9 @@ cmake .
 make && make install  
   
 ldconfig  
+
+## Compile  
+git clone https://github.com/nxtreaming/webchat.git  
+cd webchat   
+make  
+./websocket_server  
