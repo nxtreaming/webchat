@@ -34,7 +34,6 @@ struct ws_session {
 struct buffer_pool {
     unsigned char *buffers[BUFFER_POOL_SIZE];
     int ref_count[BUFFER_POOL_SIZE];
-    pthread_mutex_t lock;
 } pool;
 
 // Array to hold connected clients
@@ -138,7 +137,6 @@ static int find_client_by_id(int client_id) {
 
 // Initialize the buffer pool
 static void init_buffer_pool() {
-    pthread_mutex_init(&pool.lock, NULL);
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         pool.buffers[i] = malloc(LWS_PRE + 1 + MAX_MESSAGE_SIZE);
         if (!pool.buffers[i]) {
@@ -154,51 +152,43 @@ static void cleanup_buffer_pool() {
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         free(pool.buffers[i]);
     }
-    pthread_mutex_destroy(&pool.lock);
 }
 
 // Get a buffer from the pool
 static unsigned char *get_buffer_from_pool() {
-    pthread_mutex_lock(&pool.lock);
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.ref_count[i] == 0) { // Available buffer
             pool.ref_count[i] = 1;
-            lwsl_debug("Allocated buffer %d from pool\n", i);
-            pthread_mutex_unlock(&pool.lock);
+            lwsl_info("Allocated buffer %d from pool\n", i);
             return pool.buffers[i];
         }
     }
-    pthread_mutex_unlock(&pool.lock);
     lwsl_err("No available buffers in pool\n");
     return NULL; // No available buffer
 }
 
 // Increase reference count of a buffer
 static void add_ref_to_buffer(unsigned char *buffer) {
-    pthread_mutex_lock(&pool.lock);
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]++;
-            lwsl_debug("Increased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+            lwsl_info("Increased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             break;
         }
     }
-    pthread_mutex_unlock(&pool.lock);
 }
 
 // Release a buffer (decrease reference count)
 static void release_buffer(unsigned char *buffer) {
-    pthread_mutex_lock(&pool.lock);
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]--;
             if (pool.ref_count[i] < 0)
                 pool.ref_count[i] = 0;
-            lwsl_debug("Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+            lwsl_info("Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             break;
         }
     }
-    pthread_mutex_unlock(&pool.lock);
 }
 
 // Broadcast message to other clients
@@ -213,7 +203,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
 
     if (target_clients == 0) {
         // No target clients, do not allocate buffer
-        lwsl_debug("No target clients to broadcast message from client %d\n", sender->client_id);
+        lwsl_info("No target clients to broadcast message from client %d\n", sender->client_id);
         return;
     }
 
@@ -232,7 +222,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     // Iterate over clients and send message
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
-            // check and release the current send_buffer
+            // Check and release existing send_buffer
             if (clients[i]->send_buffer != NULL) {
                 release_buffer(clients[i]->send_buffer);
                 clients[i]->send_buffer = NULL;
@@ -320,6 +310,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                     break;
                 }
             }
+
             if (!added) {
                 lwsl_err("Max clients reached, closing connection\n");
                 return -1;
@@ -391,7 +382,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                         // Extend buffer for null-termination
                         unsigned char *new_buffer = realloc(pss->buffer, pss->size + 1);
                         if (!new_buffer) {
-                            lwsl_err("Failed to extend buffer for null-termination\n");
+                            lwsl_err("Failed to extend buffer for null-terminator\n");
                             free(pss->buffer);
                             pss->buffer = NULL;
                             return -1;
@@ -435,10 +426,13 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 pss->send_buffer = NULL;
             }
             lwsl_notice("Client %d disconnected\n", pss->client_id);
+
+            // Remove from clients array
             int client_index = find_client_by_id(pss->client_id);
             if (client_index != -1) {
                 clients[client_index] = NULL;
             }
+
             break;
         }
 
