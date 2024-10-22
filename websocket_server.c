@@ -30,6 +30,7 @@ struct ws_session {
     unsigned char *send_buffer;  // Pointer to the current buffer_pool
     struct message_node *send_queue_head;
     struct message_node *send_queue_tail;
+    struct ws_session *next; // For linked list
 };
 
 // Message node structure for send queue
@@ -46,8 +47,8 @@ struct buffer_pool {
     int ref_count[BUFFER_POOL_SIZE];
 } pool;
 
-// Array to hold connected clients
-static struct ws_session *clients[MAX_CLIENTS] = {0};
+// Linked list head for connected clients
+static struct ws_session *clients_head = NULL;
 static int force_exit = 0;
 
 // Signal handler for graceful shutdown
@@ -136,13 +137,15 @@ static int extract_client_id_from_query(const char *query_string) {
 }
 
 // Find a client by client_id
-static int find_client_by_id(int client_id) {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i] && clients[i]->client_id == client_id) {
-            return i;
+static struct ws_session* find_client_by_id(int client_id) {
+    struct ws_session *current = clients_head;
+    while (current) {
+        if (current->client_id == client_id) {
+            return current;
         }
+        current = current->next;
     }
-    return -1;
+    return NULL;
 }
 
 // Initialize the buffer pool
@@ -245,11 +248,13 @@ static struct message_node* dequeue_message(struct ws_session *client) {
 // Broadcast message to other clients
 static void broadcast_message(struct ws_session *sender, unsigned char message_type, unsigned char *payload, size_t payload_len) {
     // First, determine the number of target clients
+    struct ws_session *current = clients_head;
     int target_clients = 0;
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
+    while (current) {
+        if (current->client_id != sender->client_id && current->client_role != CLIENT_ROLE_HOST) {
             target_clients++;
         }
+        current = current->next;
     }
 
     if (target_clients == 0) {
@@ -259,16 +264,28 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     }
 
     // Iterate over clients and enqueue message
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
+    current = clients_head;
+    while (current) {
+        if (current->client_id != sender->client_id && current->client_role != CLIENT_ROLE_HOST) {
             // Enqueue message
-            enqueue_message(clients[i], message_type, payload, payload_len);
+            enqueue_message(current, message_type, payload, payload_len);
 
             // If not already sending, request write callback
-            if (clients[i]->send_buffer == NULL) {
-                lws_callback_on_writable(clients[i]->wsi);
+            if (current->send_buffer == NULL) {
+                lws_callback_on_writable(current->wsi);
             }
         }
+        current = current->next;
+    }
+}
+
+// Cleanup all clients during shutdown
+static void cleanup_clients(struct lws_context *context) {
+    struct ws_session *current = clients_head;
+    while (current) {
+        lws_close_reason(current->wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Server shutting down", 19);
+        lws_cancel_service(context); // Wake up the service loop to process the close
+        current = current->next;
     }
 }
 
@@ -278,41 +295,6 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
     struct ws_session *pss = (struct ws_session *)user;
 
     switch (reason) {
-        case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
-            // Get the full query string
-            char query_string[1024];
-            int n = lws_hdr_copy_fragment(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS, 0);
-            if (n <= 0) {
-                lwsl_err("Failed to get query string\n");
-                return -1;
-            }
-
-            // Extract client_id
-            int client_id = extract_client_id_from_query(query_string);
-            if (client_id == -1) {
-                lwsl_err("Invalid or missing client-id\n");
-                return -1;
-            }
-
-            // Check if client_id is unique
-            if (find_client_by_id(client_id) != -1) {
-                lwsl_err("Duplicate client-id: %d\n", client_id);
-                return -1;
-            }
-
-            // Store client_id in user data
-            pss->client_id = client_id;
-
-            // Store client_role in user data
-            pss->client_role = extract_client_role_from_query(query_string);
-
-            // Initialize send queue
-            pss->send_queue_head = pss->send_queue_tail = NULL;
-
-            // Allow connection
-            break;
-        }
-
         case LWS_CALLBACK_ESTABLISHED: {
             // Initialize ws_session
             pss->buffer = NULL; // Buffer will be allocated when receiving messages
@@ -322,21 +304,49 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             pss->wsi = wsi;
             pss->send_buffer = NULL;
             pss->send_queue_head = pss->send_queue_tail = NULL;
+            pss->next = NULL;
 
-            // Add to clients array
-            bool added = false;
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (!clients[i]) {
-                    clients[i] = pss;
-                    added = true;
-                    break;
+            // Get the full query string
+            size_t query_length = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_URI_ARGS);
+            if (query_length > 0 && query_length < 1024) { // Limit to 1024 for safety
+                char query_string[1024];
+                int n = lws_hdr_copy(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS);
+                if (n <= 0) {
+                    lwsl_err("Failed to copy query string\n");
+                    return -1;
                 }
-            }
+                if (n >= sizeof(query_string)) {
+                    lwsl_err("Query string too long\n");
+                    return -1;
+                }
+                query_string[n] = '\0'; // Ensure null-termination
 
-            if (!added) {
-                lwsl_err("Max clients reached, closing connection\n");
+                // Extract client_id
+                int client_id = extract_client_id_from_query(query_string);
+                if (client_id == -1) {
+                    lwsl_err("Invalid or missing client-id\n");
+                    return -1;
+                }
+
+                // Check if client_id is unique
+                if (find_client_by_id(client_id) != NULL) {
+                    lwsl_err("Duplicate client-id: %d\n", client_id);
+                    return -1;
+                }
+
+                // Store client_id in user data
+                pss->client_id = client_id;
+
+                // Store client_role in user data
+                pss->client_role = extract_client_role_from_query(query_string);
+            } else {
+                lwsl_err("No query string found or query string too long\n");
                 return -1;
             }
+
+            // Add to clients linked list
+            pss->next = clients_head;
+            clients_head = pss;
 
             lwsl_notice("Client %d connected with role %d\n", pss->client_id, pss->client_role);
             break;
@@ -344,8 +354,13 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
 
         case LWS_CALLBACK_RECEIVE: {
             // Check message size
-            if (pss->length + len > MAX_MESSAGE_SIZE) {
-                lwsl_err("Message too large from client %d, closing connection\n", pss->client_id);
+            size_t new_length = pss->length + len;
+            if (new_length > MAX_MESSAGE_SIZE) {
+                lwsl_err("Message size exceeds maximum allowed from client %d\n", pss->client_id);
+                const char *msg = "Message too large";
+                lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, (unsigned char *)msg, strlen(msg));
+                free(pss->buffer);
+                pss->buffer = NULL;
                 return -1;
             }
 
@@ -362,10 +377,13 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
 
             // Extend buffer if necessary
-            if (pss->length + len > pss->size) {
+            if (new_length > pss->size) {
                 size_t new_size = pss->size * 2;
-                while (new_size < pss->length + len) {
+                while (new_size < new_length) {
                     new_size *= 2;
+                }
+                if (new_size > MAX_MESSAGE_SIZE) {
+                    new_size = MAX_MESSAGE_SIZE;
                 }
                 unsigned char *new_buffer = realloc(pss->buffer, new_size);
                 if (!new_buffer) {
@@ -384,7 +402,9 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 if (pss->message_type != MESSAGE_TYPE_TEXT && pss->message_type != MESSAGE_TYPE_AUDIO) {
                     const char *msg = "Unsupported message type";
                     lwsl_err("%s\n", msg);
-                    lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,  (unsigned char *)msg, strlen(msg));
+                    lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR, (unsigned char *)msg, strlen(msg));
+                    free(pss->buffer);
+                    pss->buffer = NULL;
                     return -1;
                 }
                 in = (unsigned char *)in + 1;
@@ -452,11 +472,14 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                     break;
                 }
 
+                // Determine write mode based on message type
+                int write_mode = (msg->message_type == MESSAGE_TYPE_TEXT) ? LWS_WRITE_TEXT : LWS_WRITE_BINARY;
+
                 // Copy message to send_buffer
                 memcpy(send_buffer + LWS_PRE, msg->payload, msg->payload_len);
 
                 // Send message
-                int bytes = lws_write(pss->wsi, send_buffer + LWS_PRE, msg->payload_len, LWS_WRITE_BINARY);
+                int bytes = lws_write(pss->wsi, send_buffer + LWS_PRE, msg->payload_len, write_mode);
                 if (bytes < (int)(msg->payload_len)) {
                     lwsl_err("Failed to send message to client %d\n", pss->client_id);
                     release_buffer(send_buffer);
@@ -474,6 +497,11 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 // Free the message node
                 free(msg->payload);
                 free(msg);
+
+                // If there are more messages, request another writeable callback
+                if (pss->send_queue_head) {
+                    lws_callback_on_writable(pss->wsi);
+                }
             }
 
             break;
@@ -496,10 +524,17 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 }
             }
             lwsl_notice("Client %d disconnected\n", pss->client_id);
-            int client_index = find_client_by_id(pss->client_id);
-            if (client_index != -1) {
-                clients[client_index] = NULL;
+
+            // Remove from clients linked list
+            struct ws_session **curr = &clients_head;
+            while (*curr) {
+                if (*curr == pss) {
+                    *curr = pss->next;
+                    break;
+                }
+                curr = &(*curr)->next;
             }
+
             break;
         }
 
@@ -550,10 +585,22 @@ int main() {
         }
     }
 
+    // Initiate graceful shutdown
+    lwsl_notice("Initiating graceful shutdown\n");
+    cleanup_clients(context);
+
+    // Allow some time for clients to disconnect
+    for (int i = 0; i < 10; i++) {
+        lws_service(context, 100);
+    }
+
     lws_context_destroy(context);
-    lwsl_notice("Server terminated gracefully\n");
+    lwsl_notice("WebSocket context destroyed\n");
 
     cleanup_buffer_pool();
+    lwsl_notice("Buffer pool cleaned up\n");
+
+    lwsl_notice("Server terminated gracefully\n");
 
     return 0;
 }
