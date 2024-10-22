@@ -262,7 +262,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             // if client has a valid host_id, it would only receive messages from its host_id
-            if (client->host_id > 0 && client->host_id != sender->client_id)
+            if (clients[i]->host_id > 0 && clients[i]->host_id != sender->client_id)
                 continue;
             // Check and release existing send_buffer
             if (clients[i]->send_buffer != NULL) {
