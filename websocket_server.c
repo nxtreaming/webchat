@@ -170,6 +170,7 @@ static unsigned char *get_buffer_from_pool() {
         if (pool.ref_count[i] == 0) { // Available buffer
             pool.ref_count[i] = 1;
             lwsl_info("Allocated buffer %d from pool\n", i);
+            lwsl_info("Increased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             return pool.buffers[i];
         }
     }
@@ -193,8 +194,10 @@ static void release_buffer(unsigned char *buffer) {
     for (int i = 0; i < BUFFER_POOL_SIZE; i++) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]--;
-            if (pool.ref_count[i] < 0)
+            if (pool.ref_count[i] < 0) {
+                lwsl_err("Underflow: Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
                 pool.ref_count[i] = 0;
+            }
             lwsl_info("Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
             break;
         }
@@ -426,7 +429,13 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             break;
         }
 
-        case LWS_CALLBACK_CLIENT_WRITEABLE: {
+        case LWS_CALLBACK_SERVER_WRITEABLE: {
+            // Release the current send_buffer
+            if (pss->send_buffer) {
+                release_buffer(pss->send_buffer);
+                pss->send_buffer = NULL;
+            }
+
             // If not currently sending, send the next message
             if (pss->send_buffer == NULL) {
                 struct message_node *msg = dequeue_message(pss);
@@ -435,51 +444,6 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                     break;
                 }
 
-                unsigned char *send_buffer = get_buffer_from_pool();
-                if (!send_buffer) {
-                    lwsl_err("No available buffers to send message\n");
-                    free(msg->payload);
-                    free(msg);
-                    break;
-                }
-
-                // Copy message to send_buffer
-                memcpy(send_buffer + LWS_PRE, msg->payload, msg->payload_len);
-
-                // Send message
-                int bytes = lws_write(pss->wsi, send_buffer + LWS_PRE, msg->payload_len, LWS_WRITE_BINARY);
-                if (bytes < (int)(msg->payload_len)) {
-                    lwsl_err("Failed to send message to client %d\n", pss->client_id);
-                    release_buffer(send_buffer);
-                    free(msg->payload);
-                    free(msg);
-                    break;
-                }
-
-                // Assign send_buffer to client
-                pss->send_buffer = send_buffer;
-
-                // Increase buffer reference count
-                add_ref_to_buffer(send_buffer);
-
-                // Free the message node
-                free(msg->payload);
-                free(msg);
-            }
-
-            break;
-        }
-
-        case LWS_CALLBACK_CLIENT_WRITEABLE_COMPLETED: {
-            // Release the current send_buffer
-            if (pss->send_buffer) {
-                release_buffer(pss->send_buffer);
-                pss->send_buffer = NULL;
-            }
-
-            // Attempt to send the next message in the queue
-            struct message_node *msg = dequeue_message(pss);
-            if (msg) {
                 unsigned char *send_buffer = get_buffer_from_pool();
                 if (!send_buffer) {
                     lwsl_err("No available buffers to send message\n");
