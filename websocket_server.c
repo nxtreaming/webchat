@@ -454,7 +454,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         }
 
         case LWS_CALLBACK_SERVER_WRITEABLE: {
-            lwsl_info("wedebug:server writeable\n");
+            lwsl_info("wedebug:server writeable:client-id=%d\n", pss->client_id);
             // Send completion callback
             if (pss->send_buffer) {
                 lwsl_info("wedebug:release_buffer, server writeable\n");
