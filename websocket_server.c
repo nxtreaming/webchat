@@ -185,7 +185,7 @@ static void release_buffer(unsigned char *buffer) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]--;
             if (pool.ref_count[i] < 0) {
-                lwsl_warb("wedebug:Underflow: Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+                lwsl_warn("wedebug:Underflow: Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
                 pool.ref_count[i] = 0;
             }
             lwsl_info("wedebug:Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
