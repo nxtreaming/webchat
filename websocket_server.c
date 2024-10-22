@@ -185,7 +185,7 @@ static void release_buffer(unsigned char *buffer) {
         if (pool.buffers[i] == buffer) {
             pool.ref_count[i]--;
             if (pool.ref_count[i] < 0) {
-                lwsl_err("wedebug:Underflow: Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
+                lwsl_warb("wedebug:Underflow: Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
                 pool.ref_count[i] = 0;
             }
             lwsl_info("wedebug:Decreased ref_count of buffer %d to %d\n", i, pool.ref_count[i]);
@@ -227,7 +227,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             // Check and release existing send_buffer
             if (clients[i]->send_buffer != NULL) {
-                lwsl_info("wedebug:client[%d]@ broadcast\n", i);
+                lwsl_warn("wedebug:client[%d]@ broadcast\n", i);
                 release_buffer(clients[i]->send_buffer);
                 clients[i]->send_buffer = NULL;
             }
@@ -245,7 +245,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
             int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
             if (bytes < (int)(1 + payload_len)) {
                 lwsl_err("Failed to send message to client %d\n", clients[i]->client_id);
-                lwsl_info("wedebug:client[%d] @ broadcast-2\n", i);
+                lwsl_warn("wedebug:client[%d] @ broadcast-2\n", i);
                 release_buffer(send_buffer); // Release on failure
                 clients[i]->send_buffer = NULL;
             } else {
@@ -413,12 +413,12 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         }
 
         case LWS_CALLBACK_SERVER_WRITEABLE: {
-            lwsl_info("wedebug: server writeable \n");
+            lwsl_info("wedebug:server writeable\n");
             // Send completion callback
             if (pss->send_buffer) {
+                lwsl_info("wedebug:release_buffer, server writeable\n");
                 release_buffer(pss->send_buffer);
                 pss->send_buffer = NULL;
-                lwsl_info("wedebug: release_buffer, server_writeable\n");
             }
 
             break;
@@ -431,7 +431,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
             if (pss->send_buffer) {
                 release_buffer(pss->send_buffer);
-                lwsl_info("wedebug: closed\n");
+                lwsl_info("wedebug:closed\n");
                 pss->send_buffer = NULL;
             }
             lwsl_notice("Client %d disconnected\n", pss->client_id);
