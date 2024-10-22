@@ -21,6 +21,7 @@
 // Structure to represent a WebSocket session
 struct ws_session {
     int client_id;
+    int host_id;
     int client_role;
     struct lws *wsi;
     unsigned char *buffer;
@@ -125,6 +126,41 @@ static int extract_client_id_from_query(const char *query_string) {
     return client_id;
 }
 
+// Extract host_id from query string
+static int extract_host_id_from_query(const char *query_string) {
+    char *host_id_str = NULL;
+    char *query_copy = strdup(query_string);
+    if (!query_copy) {
+        lwsl_err("strdup failed for query_string\n");
+        return -1;
+    }
+
+    char *token = strtok(query_copy, "&");
+    while (token != NULL) {
+        if (strncmp(token, "host-id=", 8) == 0) {
+            host_id_str = token + 8;
+            break;
+        }
+        token = strtok(NULL, "&");
+    }
+
+    int host_id = -1;
+    if (host_id_str != NULL) {
+        host_id = atoi(host_id_str);
+        if (host_id <= 0) {
+            lwsl_err("Invalid host-id value: %s\n", host_id_str);
+            host_id = -1;  // Simple validation
+        } else {
+            lwsl_notice("Parsed host-id: %d\n", host_id);
+        }
+    } else {
+        lwsl_err("host-id parameter not found in query string\n");
+    }
+
+    free(query_copy);
+    return host_id;
+}
+
 // Find a client by client_id
 static int find_client_by_id(int client_id) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -225,6 +261,9 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     // Iterate over clients and send message
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
+            // if client has a valid host_id, it would only receive messages from its host_id
+            if (client->host_id > 0 && client->host_id != sender->client_id)
+                continue;
             // Check and release existing send_buffer
             if (clients[i]->send_buffer != NULL) {
                 lwsl_warn("wedebug:client[%d]@ broadcast\n", i);
@@ -286,6 +325,8 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 lwsl_err("Duplicate client-id: %d\n", client_id);
                 return -1;
             }
+
+            pss->host_id = extract_host_id_from_query(query_string);
 
             // Store client_id in user data
             pss->client_id = client_id;
