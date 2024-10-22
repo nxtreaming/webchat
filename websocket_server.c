@@ -28,17 +28,6 @@ struct ws_session {
     size_t size;
     unsigned char message_type;
     unsigned char *send_buffer;  // Pointer to the current buffer_pool
-    struct message_node *send_queue_head;
-    struct message_node *send_queue_tail;
-    struct ws_session *next; // For linked list
-};
-
-// Message node structure for send queue
-struct message_node {
-    unsigned char message_type;
-    unsigned char *payload;
-    size_t payload_len;
-    struct message_node *next;
 };
 
 // Structure to represent the buffer pool
@@ -47,8 +36,8 @@ struct buffer_pool {
     int ref_count[BUFFER_POOL_SIZE];
 } pool;
 
-// Linked list head for connected clients
-static struct ws_session *clients_head = NULL;
+// Array to hold connected clients
+static struct ws_session *clients[MAX_CLIENTS] = {0};
 static int force_exit = 0;
 
 // Signal handler for graceful shutdown
@@ -137,15 +126,13 @@ static int extract_client_id_from_query(const char *query_string) {
 }
 
 // Find a client by client_id
-static struct ws_session* find_client_by_id(int client_id) {
-    struct ws_session *current = clients_head;
-    while (current) {
-        if (current->client_id == client_id) {
-            return current;
+static int find_client_by_id(int client_id) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i] && clients[i]->client_id == client_id) {
+            return i;
         }
-        current = current->next;
     }
-    return NULL;
+    return -1;
 }
 
 // Initialize the buffer pool
@@ -207,54 +194,14 @@ static void release_buffer(unsigned char *buffer) {
     }
 }
 
-// Add message to queue
-static void enqueue_message(struct ws_session *client, unsigned char message_type, unsigned char *payload, size_t payload_len) {
-    struct message_node *node = malloc(sizeof(struct message_node));
-    if (!node) {
-        lwsl_err("Failed to allocate message node\n");
-        return;
-    }
-    node->message_type = message_type;
-    node->payload = malloc(1 + payload_len); // 1 byte for message_type
-    if (!node->payload) {
-        lwsl_err("Failed to allocate message payload\n");
-        free(node);
-        return;
-    }
-    node->payload[0] = message_type;
-    memcpy(node->payload + 1, payload, payload_len);
-    node->payload_len = 1 + payload_len;
-    node->next = NULL;
-
-    if (client->send_queue_tail) {
-        client->send_queue_tail->next = node;
-        client->send_queue_tail = node;
-    } else {
-        client->send_queue_head = client->send_queue_tail = node;
-    }
-}
-
-// Pop message from queue
-static struct message_node* dequeue_message(struct ws_session *client) {
-    if (!client->send_queue_head)
-        return NULL;
-    struct message_node *node = client->send_queue_head;
-    client->send_queue_head = node->next;
-    if (!client->send_queue_head)
-        client->send_queue_tail = NULL;
-    return node;
-}
-
 // Broadcast message to other clients
 static void broadcast_message(struct ws_session *sender, unsigned char message_type, unsigned char *payload, size_t payload_len) {
     // First, determine the number of target clients
-    struct ws_session *current = clients_head;
     int target_clients = 0;
-    while (current) {
-        if (current->client_id != sender->client_id && current->client_role != CLIENT_ROLE_HOST) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             target_clients++;
         }
-        current = current->next;
     }
 
     if (target_clients == 0) {
@@ -263,30 +210,54 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
         return;
     }
 
-    // Iterate over clients and enqueue message
-    current = clients_head;
-    while (current) {
-        if (current->client_id != sender->client_id && current->client_role != CLIENT_ROLE_HOST) {
-            // Enqueue message
-            enqueue_message(current, message_type, payload, payload_len);
+    unsigned char *send_buffer = get_buffer_from_pool();
+    if (!send_buffer) {
+        lwsl_err("No available buffers in pool to broadcast message\n");
+        return;
+    }
 
-            // If not already sending, request write callback
-            if (current->send_buffer == NULL) {
-                lws_callback_on_writable(current->wsi);
+    // Set message_type
+    send_buffer[LWS_PRE] = message_type;
+
+    // Copy payload
+    memcpy(send_buffer + LWS_PRE + 1, payload, payload_len);
+
+    // Iterate over clients and send message
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
+            // Check and release existing send_buffer
+            if (clients[i]->send_buffer != NULL) {
+                lwsl_info("wedebug: broadcast\n");
+                release_buffer(clients[i]->send_buffer);
+                clients[i]->send_buffer = NULL;
+            }
+
+            // Assign send_buffer to client
+            clients[i]->send_buffer = send_buffer;
+
+            // Always use binary type to dispatch message
+            int send_type = LWS_WRITE_BINARY;
+
+            // Increase buffer reference count
+            add_ref_to_buffer(send_buffer);
+
+            // Send message
+            int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
+            if (bytes < (int)(1 + payload_len)) {
+                lwsl_err("Failed to send message to client %d\n", clients[i]->client_id);
+                lwsl_info("wedebug: broadcast-2\n");
+                release_buffer(send_buffer); // Release on failure
+                clients[i]->send_buffer = NULL;
+            } else {
+                // Request writeable callback to release buffer
+                lws_callback_on_writable(clients[i]->wsi);
             }
         }
-        current = current->next;
     }
-}
 
-// Cleanup all clients during shutdown
-static void cleanup_clients(struct lws_context *context) {
-    struct ws_session *current = clients_head;
-    while (current) {
-        lws_close_reason(current->wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Server shutting down", 19);
-        lws_cancel_service(context); // Wake up the service loop to process the close
-        current = current->next;
-    }
+    // Release the initial reference after broadcasting to all clients
+    release_buffer(send_buffer);
+    lwsl_info("wedebug: broadcast-3\n");
 }
 
 // WebSocket callback function
@@ -295,6 +266,38 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
     struct ws_session *pss = (struct ws_session *)user;
 
     switch (reason) {
+        case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
+            // Get the full query string
+            char query_string[1024];
+            int n = lws_hdr_copy_fragment(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS, 0);
+            if (n <= 0) {
+                lwsl_err("Failed to get query string\n");
+                return -1;
+            }
+
+            // Extract client_id
+            int client_id = extract_client_id_from_query(query_string);
+            if (client_id == -1) {
+                lwsl_err("Invalid or missing client-id\n");
+                return -1;
+            }
+
+            // Check if client_id is unique
+            if (find_client_by_id(client_id) != -1) {
+                lwsl_err("Duplicate client-id: %d\n", client_id);
+                return -1;
+            }
+
+            // Store client_id in user data
+            pss->client_id = client_id;
+
+            // Store client_role in user data
+            pss->client_role = extract_client_role_from_query(query_string);
+
+            // Allow connection
+            break;
+        }
+
         case LWS_CALLBACK_ESTABLISHED: {
             // Initialize ws_session
             pss->buffer = NULL; // Buffer will be allocated when receiving messages
@@ -303,50 +306,21 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             pss->message_type = 0;
             pss->wsi = wsi;
             pss->send_buffer = NULL;
-            pss->send_queue_head = pss->send_queue_tail = NULL;
-            pss->next = NULL;
 
-            // Get the full query string
-            size_t query_length = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_URI_ARGS);
-            if (query_length > 0 && query_length < 1024) { // Limit to 1024 for safety
-                char query_string[1024];
-                int n = lws_hdr_copy(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS);
-                if (n <= 0) {
-                    lwsl_err("Failed to copy query string\n");
-                    return -1;
+            // Add to clients array
+            bool added = false;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (!clients[i]) {
+                    clients[i] = pss;
+                    added = true;
+                    break;
                 }
-                if (n >= sizeof(query_string)) {
-                    lwsl_err("Query string too long\n");
-                    return -1;
-                }
-                query_string[n] = '\0'; // Ensure null-termination
-
-                // Extract client_id
-                int client_id = extract_client_id_from_query(query_string);
-                if (client_id == -1) {
-                    lwsl_err("Invalid or missing client-id\n");
-                    return -1;
-                }
-
-                // Check if client_id is unique
-                if (find_client_by_id(client_id) != NULL) {
-                    lwsl_err("Duplicate client-id: %d\n", client_id);
-                    return -1;
-                }
-
-                // Store client_id in user data
-                pss->client_id = client_id;
-
-                // Store client_role in user data
-                pss->client_role = extract_client_role_from_query(query_string);
-            } else {
-                lwsl_err("No query string found or query string too long\n");
-                return -1;
             }
 
-            // Add to clients linked list
-            pss->next = clients_head;
-            clients_head = pss;
+            if (!added) {
+                lwsl_err("Max clients reached, closing connection\n");
+                return -1;
+            }
 
             lwsl_notice("Client %d connected with role %d\n", pss->client_id, pss->client_role);
             break;
@@ -354,13 +328,8 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
 
         case LWS_CALLBACK_RECEIVE: {
             // Check message size
-            size_t new_length = pss->length + len;
-            if (new_length > MAX_MESSAGE_SIZE) {
-                lwsl_err("Message size exceeds maximum allowed from client %d\n", pss->client_id);
-                const char *msg = "Message too large";
-                lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, (unsigned char *)msg, strlen(msg));
-                free(pss->buffer);
-                pss->buffer = NULL;
+            if (pss->length + len > MAX_MESSAGE_SIZE) {
+                lwsl_err("Message too large from client %d, closing connection\n", pss->client_id);
                 return -1;
             }
 
@@ -377,13 +346,10 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
 
             // Extend buffer if necessary
-            if (new_length > pss->size) {
+            if (pss->length + len > pss->size) {
                 size_t new_size = pss->size * 2;
-                while (new_size < new_length) {
+                while (new_size < pss->length + len) {
                     new_size *= 2;
-                }
-                if (new_size > MAX_MESSAGE_SIZE) {
-                    new_size = MAX_MESSAGE_SIZE;
                 }
                 unsigned char *new_buffer = realloc(pss->buffer, new_size);
                 if (!new_buffer) {
@@ -402,9 +368,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 if (pss->message_type != MESSAGE_TYPE_TEXT && pss->message_type != MESSAGE_TYPE_AUDIO) {
                     const char *msg = "Unsupported message type";
                     lwsl_err("%s\n", msg);
-                    lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR, (unsigned char *)msg, strlen(msg));
-                    free(pss->buffer);
-                    pss->buffer = NULL;
+                    lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,  (unsigned char *)msg, strlen(msg));
                     return -1;
                 }
                 in = (unsigned char *)in + 1;
@@ -450,60 +414,24 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         }
 
         case LWS_CALLBACK_SERVER_WRITEABLE: {
-            // Release the current send_buffer
+            lwsl_info("wedebug: server writeable \n");
+            // Send completion callback
             if (pss->send_buffer) {
                 release_buffer(pss->send_buffer);
                 pss->send_buffer = NULL;
+                lwsl_info("wedebug: release_buffer, server_writeable\n");
             }
+            break;
+        }
 
-            // If not currently sending, send the next message
-            if (pss->send_buffer == NULL) {
-                struct message_node *msg = dequeue_message(pss);
-                if (msg == NULL) {
-                    // No pending messages
-                    break;
-                }
-
-                unsigned char *send_buffer = get_buffer_from_pool();
-                if (!send_buffer) {
-                    lwsl_err("No available buffers to send message\n");
-                    free(msg->payload);
-                    free(msg);
-                    break;
-                }
-
-                // Determine write mode based on message type
-                int write_mode = (msg->message_type == MESSAGE_TYPE_TEXT) ? LWS_WRITE_TEXT : LWS_WRITE_BINARY;
-
-                // Copy message to send_buffer
-                memcpy(send_buffer + LWS_PRE, msg->payload, msg->payload_len);
-
-                // Send message
-                int bytes = lws_write(pss->wsi, send_buffer + LWS_PRE, msg->payload_len, write_mode);
-                if (bytes < (int)(msg->payload_len)) {
-                    lwsl_err("Failed to send message to client %d\n", pss->client_id);
-                    release_buffer(send_buffer);
-                    free(msg->payload);
-                    free(msg);
-                    break;
-                }
-
-                // Assign send_buffer to client
-                pss->send_buffer = send_buffer;
-
-                // Increase buffer reference count
-                add_ref_to_buffer(send_buffer);
-
-                // Free the message node
-                free(msg->payload);
-                free(msg);
-
-                // If there are more messages, request another writeable callback
-                if (pss->send_queue_head) {
-                    lws_callback_on_writable(pss->wsi);
-                }
+        case LWS_CALLBACK_CLIENT_WRITEABLE: {
+            // Send completion callback
+            if (pss->send_buffer) {
+                release_buffer(pss->send_buffer);
+                pss->send_buffer = NULL;
+                lwsl_info("wedebug: release_buffer, client_writeable\n");
             }
-
+            lwsl_info("wedebug: client_writeable 100");
             break;
         }
 
@@ -514,25 +442,15 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
             if (pss->send_buffer) {
                 release_buffer(pss->send_buffer);
+                lwsl_info("wedebug: closed\n");
                 pss->send_buffer = NULL;
-            }
-            while (pss->send_queue_head) {
-                struct message_node *msg = dequeue_message(pss);
-                if (msg) {
-                    free(msg->payload);
-                    free(msg);
-                }
             }
             lwsl_notice("Client %d disconnected\n", pss->client_id);
 
-            // Remove from clients linked list
-            struct ws_session **curr = &clients_head;
-            while (*curr) {
-                if (*curr == pss) {
-                    *curr = pss->next;
-                    break;
-                }
-                curr = &(*curr)->next;
+            // Remove from clients array
+            int client_index = find_client_by_id(pss->client_id);
+            if (client_index != -1) {
+                clients[client_index] = NULL;
             }
 
             break;
@@ -585,22 +503,10 @@ int main() {
         }
     }
 
-    // Initiate graceful shutdown
-    lwsl_notice("Initiating graceful shutdown\n");
-    cleanup_clients(context);
-
-    // Allow some time for clients to disconnect
-    for (int i = 0; i < 10; i++) {
-        lws_service(context, 100);
-    }
-
     lws_context_destroy(context);
-    lwsl_notice("WebSocket context destroyed\n");
+    lwsl_notice("Server terminated gracefully\n");
 
     cleanup_buffer_pool();
-    lwsl_notice("Buffer pool cleaned up\n");
-
-    lwsl_notice("Server terminated gracefully\n");
 
     return 0;
 }
