@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <libwebsockets.h>
 #include <signal.h>
 #include <pthread.h>
@@ -20,8 +22,8 @@
 
 // Structure to represent a WebSocket session
 struct ws_session {
-    int client_id;
-    int host_id;
+    int64_t client_id;
+    int64_t host_id;
     int client_role;
     struct lws *wsi;
     unsigned char *buffer;
@@ -92,7 +94,7 @@ static int extract_client_role_from_query(const char *query_string) {
 }
 
 // Extract client_id from query string
-static int extract_client_id_from_query(const char *query_string) {
+static int64_t extract_client_id_from_query(const char *query_string) {
     char *client_id_str = NULL;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
@@ -109,14 +111,14 @@ static int extract_client_id_from_query(const char *query_string) {
         token = strtok(NULL, "&");
     }
 
-    int client_id = -1;
+    int64_t client_id = -1;
     if (client_id_str != NULL) {
-        client_id = atoi(client_id_str);
+        client_id = strtoll(client_id_str, NULL, 10);
         if (client_id <= 0) {
             lwsl_err("Invalid client-id value: %s\n", client_id_str);
             client_id = -1;  // Simple validation
         } else {
-            lwsl_notice("Parsed client-id: %d\n", client_id);
+            lwsl_notice("Parsed client-id: %" PRIi64 "\n", client_id);
         }
     } else {
         lwsl_err("client-id parameter not found in query string\n");
@@ -127,7 +129,7 @@ static int extract_client_id_from_query(const char *query_string) {
 }
 
 // Extract host_id from query string
-static int extract_host_id_from_query(const char *query_string) {
+static int64_t extract_host_id_from_query(const char *query_string) {
     char *host_id_str = NULL;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
@@ -144,14 +146,14 @@ static int extract_host_id_from_query(const char *query_string) {
         token = strtok(NULL, "&");
     }
 
-    int host_id = -1;
+    int64_t host_id = -1;
     if (host_id_str != NULL) {
-        host_id = atoi(host_id_str);
+        host_id = strtoll(host_id_str, NULL, 10);
         if (host_id <= 0) {
             lwsl_err("Invalid host-id value: %s\n", host_id_str);
             host_id = -1;  // Simple validation
         } else {
-            lwsl_notice("Parsed host-id: %d\n", host_id);
+            lwsl_notice("Parsed host-id: %" PRIi64 "\n", host_id);
         }
     } else {
         lwsl_err("host-id parameter not found in query string\n");
@@ -162,7 +164,7 @@ static int extract_host_id_from_query(const char *query_string) {
 }
 
 // Find a client by client_id
-static int find_client_by_id(int client_id) {
+static int find_client_by_id(int64_t client_id) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id == client_id) {
             return i;
@@ -242,7 +244,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
 
     if (target_clients == 0) {
         // No target clients, do not allocate buffer
-        lwsl_info("No target clients to broadcast message from client %d\n", sender->client_id);
+        lwsl_info("No target clients to broadcast message from client %" PRIi64 "\n", sender->client_id);
         return;
     }
 
@@ -283,7 +285,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
             // Send message
             int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
             if (bytes < (int)(1 + payload_len)) {
-                lwsl_err("Failed to send message to client %d\n", clients[i]->client_id);
+                lwsl_err("Failed to send message to client %" PRIi64 "\n", clients[i]->client_id);
                 lwsl_warn("wedebug:client[%d] @ broadcast-2\n", i);
                 release_buffer(send_buffer); // Release on failure
                 clients[i]->send_buffer = NULL;
@@ -314,7 +316,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
 
             // Extract client_id
-            int client_id = extract_client_id_from_query(query_string);
+            int64_t client_id = extract_client_id_from_query(query_string);
             if (client_id == -1) {
                 lwsl_err("Invalid or missing client-id\n");
                 return -1;
@@ -322,7 +324,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
 
             // Check if client_id is unique
             if (find_client_by_id(client_id) != -1) {
-                lwsl_err("Duplicate client-id: %d\n", client_id);
+                lwsl_err("Duplicate client-id: %" PRIi64 "\n", client_id);
                 return -1;
             }
 
@@ -362,14 +364,14 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
-            lwsl_notice("Client %d connected with role %d\n", pss->client_id, pss->client_role);
+            lwsl_notice("Client %" PRIi64 " connected with role %d\n", pss->client_id, pss->client_role);
             break;
         }
 
         case LWS_CALLBACK_RECEIVE: {
             // Check message size
             if (pss->length + len > MAX_MESSAGE_SIZE) {
-                lwsl_err("Message too large from client %d, closing connection\n", pss->client_id);
+                lwsl_err("Message too large from client %" PRIi64 ", closing connection\n", pss->client_id);
                 return -1;
             }
 
@@ -437,9 +439,9 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                         pss->size += 1;
                     }
                     pss->buffer[pss->length] = '\0';
-                    lwsl_info("Received text from client %d: %s\n", pss->client_id, pss->buffer);
+                    lwsl_info("Received text from client %" PRIi64 ": %s\n", pss->client_id, pss->buffer);
                 } else if (pss->message_type == MESSAGE_TYPE_AUDIO) {
-                    lwsl_info("Received audio from client %d, size: %zu bytes\n", pss->client_id, pss->length);
+                    lwsl_info("Received audio from client %" PRIi64 ", size: %zu bytes\n", pss->client_id, pss->length);
                 }
 
                 // Broadcast message
@@ -454,7 +456,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         }
 
         case LWS_CALLBACK_SERVER_WRITEABLE: {
-            lwsl_info("wedebug:server writeable:client-id=%d\n", pss->client_id);
+            lwsl_info("wedebug:server writeable:client-id=%" PRIi64 "\n", pss->client_id);
             // Send completion callback
             if (pss->send_buffer) {
                 lwsl_info("wedebug:release_buffer, server writeable\n");
@@ -475,10 +477,10 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 lwsl_info("wedebug:closed\n");
                 pss->send_buffer = NULL;
             }
-            lwsl_notice("Client %d disconnected\n", pss->client_id);
+            lwsl_notice("Client %" PRIi64 " disconnected\n", pss->client_id);
 
             // Remove from clients array
-            int client_index = find_client_by_id(pss->client_id);
+            int64_t client_index = find_client_by_id(pss->client_id);
             if (client_index != -1) {
                 clients[client_index] = NULL;
             }
