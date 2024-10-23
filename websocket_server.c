@@ -30,7 +30,8 @@ struct ws_session {
     size_t length;
     size_t size;
     unsigned char message_type;
-    unsigned char *send_buffer;  // Pointer to the current buffer_pool
+    unsigned char *send_buffer;
+    size_t send_length;
 };
 
 // Structure to represent the buffer pool
@@ -260,7 +261,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     // Copy payload
     memcpy(send_buffer + LWS_PRE + 1, payload, payload_len);
 
-    // Iterate over clients and send message
+    // Iterate over clients and prepare to send message
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             // if client has a valid host_id, it would only receive messages from its host_id
@@ -276,23 +277,14 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
             // Assign send_buffer to client
             clients[i]->send_buffer = send_buffer;
 
-            // Always use binary type to dispatch message
-            int send_type = LWS_WRITE_BINARY;
+            // Set send_length for the client
+            clients[i]->send_length = 1 + payload_len; // 1 byte for message_type + payload
 
             // Increase buffer reference count
             add_ref_to_buffer(send_buffer);
 
-            // Send message
-            int bytes = lws_write(clients[i]->wsi, send_buffer + LWS_PRE, 1 + payload_len, send_type);
-            if (bytes < (int)(1 + payload_len)) {
-                lwsl_err("Failed to send message to client %" PRIi64 "\n", clients[i]->client_id);
-                lwsl_warn("wedebug:client[%d] @ broadcast-2\n", i);
-                release_buffer(send_buffer); // Release on failure
-                clients[i]->send_buffer = NULL;
-            } else {
-                // Request writeable callback to release buffer
-                lws_callback_on_writable(clients[i]->wsi);
-            }
+            // Request writeable callback to send the message in the appropriate callback
+            lws_callback_on_writable(clients[i]->wsi);
         }
     }
 
@@ -348,6 +340,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             pss->message_type = 0;
             pss->wsi = wsi;
             pss->send_buffer = NULL;
+            pss->send_length = 0;
 
             // Add to clients array
             bool added = false;
@@ -447,7 +440,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 // Broadcast message
                 broadcast_message(pss, pss->message_type, pss->buffer, pss->length);
 
-                // Reset buffer
+                // Reset receive buffer
                 pss->length = 0;
                 pss->message_type = 0;
             }
@@ -459,9 +452,23 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             lwsl_info("wedebug:server writeable:client-id=%" PRIi64 "\n", pss->client_id);
             // Send completion callback
             if (pss->send_buffer) {
-                lwsl_info("wedebug:release_buffer, server writeable\n");
+                // Determine the data length to send
+                // Since we always use LWS_WRITE_BINARY, data_len is always 1 + payload_len
+                size_t data_len = pss->send_length; // 1 byte for message_type + payload length
+
+                // Call lws_write() to send the data
+                int bytes = lws_write(pss->wsi, pss->send_buffer + LWS_PRE, data_len, LWS_WRITE_BINARY);
+                if (bytes < (int)data_len) {
+                    lwsl_err("Failed to send message to client %" PRIi64 "\n", pss->client_id);
+                    // Optionally handle the error, e.g., close the connection
+                } else {
+                    lwsl_info("Sent %d bytes to client %" PRIi64 "\n", bytes, pss->client_id);
+                }
+
+                // Release the send buffer after sending
                 release_buffer(pss->send_buffer);
                 pss->send_buffer = NULL;
+                pss->send_length = 0;
             }
 
             break;
@@ -476,6 +483,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 release_buffer(pss->send_buffer);
                 lwsl_info("wedebug:closed\n");
                 pss->send_buffer = NULL;
+                pss->send_length = 0;
             }
             lwsl_notice("Client %" PRIi64 " disconnected\n", pss->client_id);
 
