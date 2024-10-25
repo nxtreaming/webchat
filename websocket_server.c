@@ -320,12 +320,20 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
-            // Check if client_id is unique
-            if (find_client_by_id(client_id) != -1) {
-                lwsl_err("Duplicate client-id: %" PRIi64 "\n", client_id);
-                return -1;
+            // Check for duplicate client_id
+            int existing_index = find_client_by_id(client_id);
+            if (existing_index != -1) {
+                struct ws_session *existing_client = clients[existing_index];
+                if (existing_client && existing_client->wsi) {
+                    lwsl_notice("Duplicate client-id: %" PRIi64 ", closing existing connection\n", client_id);
+                    // Close the existing connection
+                    lws_close_reason(existing_client->wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char *)"Duplicate client-id", strlen("Duplicate client-id"));
+                    // Remove the old client from the clients array
+                    clients[existing_index] = NULL;
+                }
             }
 
+            // Continue processing the new connection
             pss->subscribe_id = extract_subscribe_id_from_query(query_string);
 
             // Store client_id in user data
