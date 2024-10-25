@@ -49,24 +49,19 @@ static void signal_handler(int sig) {
     force_exit = 1;
 }
 
-// Helper function to retrieve the full query string by concatenating all fragments
+// Helper function to retrieve the full query string by copying it at once
 static int get_full_query_string(struct lws *wsi, char *query_string, size_t max_size) {
-    int total_length = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_URI_ARGS);
-    if (total_length < 0) {
-        lwsl_err("Failed to get total length of query string\n");
-        return -1;
-    }
-
-    if ((size_t)total_length >= max_size) {
-        lwsl_err("Query string too long\n");
-        return -1;
-    }
-
-    int copied = lws_hdr_copy(wsi, WSI_TOKEN_HTTP_URI_ARGS, query_string, max_size);
+    int copied = lws_hdr_copy(wsi, query_string, max_size - 1, WSI_TOKEN_HTTP_URI_ARGS);
     if (copied < 0) {
         lwsl_err("Failed to copy query string\n");
         return -1;
     }
+
+    if ((size_t)copied >= max_size) {
+        lwsl_err("Query string too long\n");
+        return -1;
+    }
+    query_string[copied] = '\0';
 
     // Log the complete query string for verification
     lwsl_info("Full query string: %s\n", query_string);
