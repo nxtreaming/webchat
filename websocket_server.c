@@ -49,6 +49,29 @@ static void signal_handler(int sig) {
     force_exit = 1;
 }
 
+// Helper function to retrieve the full query string by concatenating all fragments
+static int get_full_query_string(struct lws *wsi, char *query_string, size_t max_size) {
+    int n;
+    int fragment = 0;
+    query_string[0] = '\0';  // Initialize as empty string
+
+    while ((n = lws_hdr_copy_fragment(wsi, query_string + strlen(query_string),
+                                     max_size - strlen(query_string) - 1,
+                                     WSI_TOKEN_HTTP_URI_ARGS, fragment)) > 0) {
+        fragment++;
+    }
+
+    if (n < 0 && fragment == 0) {
+        // Failed to retrieve any fragment
+        return -1;
+    }
+
+    // Log the complete query string for verification
+    lwsl_info("Full query string: %s\n", query_string);
+
+    return 0;
+}
+
 // Extract client_role from query string
 static int extract_client_role_from_query(const char *query_string) {
     char *client_role_str = NULL;
@@ -306,10 +329,9 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
     switch (reason) {
         case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
             // Get the full query string
-            char query_string[1024];
-            int n = lws_hdr_copy_fragment(wsi, query_string, sizeof(query_string), WSI_TOKEN_HTTP_URI_ARGS, 0);
-            if (n <= 0) {
-                lwsl_err("Failed to get query string\n");
+            char query_string[4096];
+            if (get_full_query_string(wsi, query_string, sizeof(query_string)) != 0) {
+                lwsl_err("Failed to get full query string\n");
                 return -1;
             }
 
