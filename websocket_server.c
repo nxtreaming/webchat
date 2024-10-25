@@ -23,7 +23,7 @@
 // Structure to represent a WebSocket session
 struct ws_session {
     int64_t client_id;
-    int64_t host_id;
+    int64_t subscribe_id;
     int client_role;
     struct lws *wsi;
     unsigned char *buffer;
@@ -59,9 +59,11 @@ static int extract_client_role_from_query(const char *query_string) {
     }
 
     char *token = strtok(query_copy, "&");
+    char *key_str = "client-role=";
+    int key_len = strlen(key_str);
     while (token != NULL) {
-        if (strncmp(token, "client-role=", 12) == 0) {
-            client_role_str = token + 12;
+        if (strncmp(token, key_str, key_len) == 0) {
+            client_role_str = token + key_len;
             break;
         }
         token = strtok(NULL, "&");
@@ -104,9 +106,11 @@ static int64_t extract_client_id_from_query(const char *query_string) {
     }
 
     char *token = strtok(query_copy, "&");
+    char *key_str = "client-id=";
+    int key_len = strlen(key_str);
     while (token != NULL) {
-        if (strncmp(token, "client-id=", 10) == 0) {
-            client_id_str = token + 10;
+        if (strncmp(token, key_str, key_len) == 0) {
+            client_id_str = token + key_len;
             break;
         }
         token = strtok(NULL, "&");
@@ -129,9 +133,9 @@ static int64_t extract_client_id_from_query(const char *query_string) {
     return client_id;
 }
 
-// Extract host_id from query string
-static int64_t extract_host_id_from_query(const char *query_string) {
-    char *host_id_str = NULL;
+// Extract subscribe_id from query string
+static int64_t extract_subscribe_id_from_query(const char *query_string) {
+    char *subscribe_id_str = NULL;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
         lwsl_err("strdup failed for query_string\n");
@@ -139,29 +143,31 @@ static int64_t extract_host_id_from_query(const char *query_string) {
     }
 
     char *token = strtok(query_copy, "&");
+    char *key_str = "subscribe-id=";
+    int key_len = strlen(key_str);
     while (token != NULL) {
-        if (strncmp(token, "host-id=", 8) == 0) {
-            host_id_str = token + 8;
+        if (strncmp(token, key_str, key_len) == 0) {
+            subscribe_id_str = token + key_len;
             break;
         }
         token = strtok(NULL, "&");
     }
 
-    int64_t host_id = -1;
-    if (host_id_str != NULL) {
-        host_id = strtoll(host_id_str, NULL, 10);
-        if (host_id <= 0) {
-            lwsl_err("Invalid host-id value: %s\n", host_id_str);
-            host_id = -1;  // Simple validation
+    int64_t subscribe_id = -1;
+    if (subscribe_id_str != NULL) {
+        subscribe_id = strtoll(subscribe_id_str, NULL, 10);
+        if (subscribe_id <= 0) {
+            lwsl_err("Invalid subscribe-id value: %s\n", subscribe_id_str);
+            subscribe_id = -1;
         } else {
-            lwsl_notice("Parsed host-id: %" PRIi64 "\n", host_id);
+            lwsl_notice("Parsed subscribe-id: %" PRIi64 "\n", subscribe_id);
         }
     } else {
-        lwsl_err("host-id parameter not found in query string\n");
+        lwsl_err("subscribe-id parameter not found in query string\n");
     }
 
     free(query_copy);
-    return host_id;
+    return subscribe_id;
 }
 
 // Find a client by client_id
@@ -265,7 +271,7 @@ static void broadcast_message(struct ws_session *sender, unsigned char message_t
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] && clients[i]->client_id != sender->client_id && clients[i]->client_role != CLIENT_ROLE_HOST) {
             // if client has a valid host_id, it would only receive messages from its host_id
-            if (clients[i]->host_id > 0 && clients[i]->host_id != sender->client_id)
+            if (clients[i]->subscribe_id > 0 && clients[i]->subscribe_id != sender->client_id)
                 continue;
             // Check and release existing send_buffer
             if (clients[i]->send_buffer != NULL) {
@@ -320,7 +326,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
                 return -1;
             }
 
-            pss->host_id = extract_host_id_from_query(query_string);
+            pss->subscribe_id = extract_subscribe_id_from_query(query_string);
 
             // Store client_id in user data
             pss->client_id = client_id;
@@ -516,7 +522,7 @@ int main() {
     struct lws_context *context;
 
     memset(&info, 0, sizeof(info));
-    info.port = 8080;
+    info.port = 28080;
     info.protocols = protocols;
     info.options = LWS_SERVER_OPTION_VALIDATE_UTF8; 
 
