@@ -51,18 +51,20 @@ static void signal_handler(int sig) {
 
 // Helper function to retrieve the full query string by concatenating all fragments
 static int get_full_query_string(struct lws *wsi, char *query_string, size_t max_size) {
-    int n;
-    int fragment = 0;
-    query_string[0] = '\0';  // Initialize as empty string
-
-    while ((n = lws_hdr_copy_fragment(wsi, query_string + strlen(query_string),
-                                     max_size - strlen(query_string) - 1,
-                                     WSI_TOKEN_HTTP_URI_ARGS, fragment)) > 0) {
-        fragment++;
+    int total_length = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_URI_ARGS);
+    if (total_length < 0) {
+        lwsl_err("Failed to get total length of query string\n");
+        return -1;
     }
 
-    if (n < 0 && fragment == 0) {
-        // Failed to retrieve any fragment
+    if ((size_t)total_length >= max_size) {
+        lwsl_err("Query string too long\n");
+        return -1;
+    }
+
+    int copied = lws_hdr_copy(wsi, WSI_TOKEN_HTTP_URI_ARGS, query_string, max_size);
+    if (copied < 0) {
+        lwsl_err("Failed to copy query string\n");
         return -1;
     }
 
@@ -524,7 +526,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             lwsl_notice("Client %" PRIi64 " disconnected\n", pss->client_id);
 
             // Remove from clients array
-            int64_t client_index = find_client_by_id(pss->client_id);
+            int client_index = find_client_by_id(pss->client_id);
             if (client_index != -1) {
                 clients[client_index] = NULL;
             }
