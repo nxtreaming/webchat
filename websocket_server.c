@@ -70,11 +70,11 @@ static int get_full_query_string(struct lws *wsi, char *query_string, size_t max
 }
 
 // Extract token from query string
-static int extract_token_from_query(const char *query_string, char *token_key, char *token_value) {
+static int extract_token_from_query(const char *query_string, const char *token_key, char *token_value) {
     if (!token_value)
         return -1;
     int ret = 0;
-    token_value[0] = NULL;
+    token_value[0] = '\0';;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
         lwsl_err("strdup failed for query_string\n");
@@ -150,7 +150,7 @@ static int64_t extract_client_id_from_query(const char *query_string, const char
 
 // Extract subscribe_id from query string: "subscribe-id="
 static int64_t extract_subscribe_id_from_query(const char *query_string, const char *token_key) {
-    char subscribe_id_str[128] = {0];
+    char subscribe_id_str[128] = {0};
 
     int ret = extract_token_from_query(query_string, token_key, subscribe_id_str);
     if (ret < 0) {
