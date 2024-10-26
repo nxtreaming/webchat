@@ -69,9 +69,12 @@ static int get_full_query_string(struct lws *wsi, char *query_string, size_t max
     return 0;
 }
 
-// Extract client_role from query string
-static int extract_client_role_from_query(const char *query_string) {
-    char *client_role_str = NULL;
+// Extract token from query string
+static int extract_token_from_query(const char *query_string, char *token_key, char *token_value) {
+    if (!token_value)
+        return -1;
+    int ret = 0;
+    token_value[0] = NULL;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
         lwsl_err("strdup failed for query_string\n");
@@ -79,114 +82,90 @@ static int extract_client_role_from_query(const char *query_string) {
     }
 
     char *token = strtok(query_copy, "&");
-    char *key_str = "client-role=";
-    int key_len = strlen(key_str);
+    int key_len = strlen(token_key);
     while (token != NULL) {
-        if (strncmp(token, key_str, key_len) == 0) {
-            client_role_str = token + key_len;
+        if (strncmp(token, token_key, key_len) == 0) {
+            strcpy(token_value, token + key_len);
+            ret = 1;
             break;
         }
         token = strtok(NULL, "&");
     }
 
-    int client_role = CLIENT_ROLE_NORMAL;
-    if (client_role_str != NULL) {
-        client_role = atoi(client_role_str);
-        if (client_role <= 0) {
-            lwsl_err("Invalid client-role value: %s\n", client_role_str);
-            client_role = CLIENT_ROLE_NORMAL;
-        } else {
-            lwsl_notice("Parsed client-role: %d\n", client_role);
-            if (client_role == 1)
-                client_role = CLIENT_ROLE_HOST;
-            else if (client_role == 2)
-                client_role = CLIENT_ROLE_LISTEN;
-            else if (client_role == 3) 
-                client_role = CLIENT_ROLE_NORMAL;
-            else {
-                lwsl_err("Unsupported client-role: %d, rolling back to 'normal role'\n", client_role);
-                client_role = CLIENT_ROLE_NORMAL;
-            }
-        }
-    } else {
-        lwsl_err("client-role parameter not found in query string\n");
+    free(query_copy);
+    return ret;
+}
+
+// Extract client_role from query string: "client-role="
+static int extract_client_role_from_query(const char *query_string, const char *token_key) {
+    char client_role_str[128] = {0};
+
+    int ret = extract_token_from_query(query_string, token_key, client_role_str);
+    if (ret < 0) {
+        lwsl_notice("Fail to find the token: %s\n", token_key);
+        return -1;
     }
 
-    free(query_copy);
+    int client_role = atoi(client_role_str);
+    if (client_role <= 0) {
+        lwsl_err("Invalid client-role value: %s\n", client_role_str);
+        client_role = CLIENT_ROLE_NORMAL;
+    } else {
+        lwsl_notice("Parsed client-role: %d\n", client_role);
+        if (client_role == 1)
+            client_role = CLIENT_ROLE_HOST;
+        else if (client_role == 2)
+            client_role = CLIENT_ROLE_LISTEN;
+        else if (client_role == 3)
+            client_role = CLIENT_ROLE_NORMAL;
+        else {
+            lwsl_err("Unsupported client-role: %d, rolling back to 'normal role'\n", client_role);
+            client_role = CLIENT_ROLE_NORMAL;
+        }
+    }
+
     return client_role;
 }
 
-// Extract client_id from query string
-static int64_t extract_client_id_from_query(const char *query_string) {
-    char *client_id_str = NULL;
-    char *query_copy = strdup(query_string);
-    if (!query_copy) {
-        lwsl_err("strdup failed for query_string\n");
+// Extract client_id from query string: "client-id="
+static int64_t extract_client_id_from_query(const char *query_string, const char *token_key) {
+    char client_id_str[128] = {0};
+
+    int ret = extract_token_from_query(query_string, token_key, client_id_str);
+    if (ret < 0) {
+        lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
     }
 
-    char *token = strtok(query_copy, "&");
-    char *key_str = "client-id=";
-    int key_len = strlen(key_str);
-    while (token != NULL) {
-        if (strncmp(token, key_str, key_len) == 0) {
-            client_id_str = token + key_len;
-            break;
-        }
-        token = strtok(NULL, "&");
-    }
-
-    int64_t client_id = -1;
-    if (client_id_str != NULL) {
-        client_id = strtoll(client_id_str, NULL, 10);
-        if (client_id <= 0) {
-            lwsl_err("Invalid client-id value: %s\n", client_id_str);
-            client_id = -1;  // Simple validation
-        } else {
-            lwsl_notice("Parsed client-id: %" PRIi64 "\n", client_id);
-        }
+    int64_t client_id = strtoll(client_id_str, NULL, 10);
+    if (client_id <= 0) {
+        lwsl_err("Invalid client-id value: %s\n", client_id_str);
+        client_id = -1;
     } else {
-        lwsl_err("client-id parameter not found in query string\n");
+        lwsl_notice("Parsed client-id: %" PRIi64 "\n", client_id);
     }
 
-    free(query_copy);
     return client_id;
 }
 
-// Extract subscribe_id from query string
-static int64_t extract_subscribe_id_from_query(const char *query_string) {
-    char *subscribe_id_str = NULL;
-    char *query_copy = strdup(query_string);
-    if (!query_copy) {
-        lwsl_err("strdup failed for query_string\n");
+// Extract subscribe_id from query string: "subscribe-id="
+static int64_t extract_subscribe_id_from_query(const char *query_string, const char *token_key) {
+    char subscribe_id_str[128] = {0];
+
+    int ret = extract_token_from_query(query_string, token_key, subscribe_id_str);
+    if (ret < 0) {
+        lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
     }
 
-    char *token = strtok(query_copy, "&");
-    char *key_str = "subscribe-id=";
-    int key_len = strlen(key_str);
-    while (token != NULL) {
-        if (strncmp(token, key_str, key_len) == 0) {
-            subscribe_id_str = token + key_len;
-            break;
-        }
-        token = strtok(NULL, "&");
-    }
-
-    int64_t subscribe_id = -1;
-    if (subscribe_id_str != NULL) {
-        subscribe_id = strtoll(subscribe_id_str, NULL, 10);
-        if (subscribe_id <= 0) {
-            lwsl_err("Invalid subscribe-id value: %s\n", subscribe_id_str);
-            subscribe_id = -1;
-        } else {
-            lwsl_notice("Parsed subscribe-id: %" PRIi64 "\n", subscribe_id);
-        }
+    int64_t subscribe_id = strtoll(subscribe_id_str, NULL, 10);
+    if (subscribe_id <= 0) {
+        lwsl_err("Invalid subscribe-id value: %s\n", subscribe_id_str);
+        subscribe_id = -1;
     } else {
-        lwsl_err("subscribe-id parameter not found in query string\n");
+        lwsl_notice("Parsed subscribe-id: %" PRIi64 "\n", subscribe_id);
     }
 
-    free(query_copy);
     return subscribe_id;
 }
 
@@ -333,7 +312,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
 
             // Extract client_id
-            int64_t client_id = extract_client_id_from_query(query_string);
+            int64_t client_id = extract_client_id_from_query(query_string, "client-id=");
             if (client_id == -1) {
                 lwsl_err("Invalid or missing client-id\n");
                 return -1;
@@ -353,13 +332,13 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             }
 
             // Continue processing the new connection
-            pss->subscribe_id = extract_subscribe_id_from_query(query_string);
+            pss->subscribe_id = extract_subscribe_id_from_query(query_string, "subscribe-id=");
 
             // Store client_id in user data
             pss->client_id = client_id;
 
             // Store client_role in user data
-            pss->client_role = extract_client_role_from_query(query_string);
+            pss->client_role = extract_client_role_from_query(query_string, "client-role=");
 
             // Allow connection
             break;
