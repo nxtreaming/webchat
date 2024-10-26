@@ -98,17 +98,17 @@ static int extract_token_from_query(const char *query_string, const char *token_
 
 // Extract client_role from query string: "client-role="
 static int extract_client_role_from_query(const char *query_string, const char *token_key) {
-    char client_role_str[128] = {0};
+    char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, client_role_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
     }
 
-    int client_role = atoi(client_role_str);
+    int client_role = atoi(token_str);
     if (client_role <= 0) {
-        lwsl_err("Invalid client-role value: %s\n", client_role_str);
+        lwsl_err("Invalid client-role value: %s\n", token_str);
         client_role = CLIENT_ROLE_NORMAL;
     } else {
         lwsl_notice("Parsed client-role: %d\n", client_role);
@@ -129,17 +129,17 @@ static int extract_client_role_from_query(const char *query_string, const char *
 
 // Extract client_id from query string: "client-id="
 static int64_t extract_client_id_from_query(const char *query_string, const char *token_key) {
-    char client_id_str[128] = {0};
+    char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, client_id_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
     }
 
-    int64_t client_id = strtoll(client_id_str, NULL, 10);
+    int64_t client_id = strtoll(token_str, NULL, 10);
     if (client_id <= 0) {
-        lwsl_err("Invalid client-id value: %s\n", client_id_str);
+        lwsl_err("Invalid client-id value: %s\n", token_str);
         client_id = -1;
     } else {
         lwsl_notice("Parsed client-id: %" PRIi64 "\n", client_id);
@@ -150,17 +150,17 @@ static int64_t extract_client_id_from_query(const char *query_string, const char
 
 // Extract subscribe_id from query string: "subscribe-id="
 static int64_t extract_subscribe_id_from_query(const char *query_string, const char *token_key) {
-    char subscribe_id_str[128] = {0};
+    char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, subscribe_id_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
     }
 
-    int64_t subscribe_id = strtoll(subscribe_id_str, NULL, 10);
+    int64_t subscribe_id = strtoll(token_str, NULL, 10);
     if (subscribe_id <= 0) {
-        lwsl_err("Invalid subscribe-id value: %s\n", subscribe_id_str);
+        lwsl_err("Invalid subscribe-id value: %s\n", token_str);
         subscribe_id = -1;
     } else {
         lwsl_notice("Parsed subscribe-id: %" PRIi64 "\n", subscribe_id);
@@ -176,6 +176,7 @@ static int find_client_by_id(int64_t client_id) {
             return i;
         }
     }
+
     return -1;
 }
 
@@ -208,6 +209,7 @@ static unsigned char *get_buffer_from_pool() {
             return pool.buffers[i];
         }
     }
+
     lwsl_err("No available buffers in pool\n");
     return NULL; // No available buffer
 }
