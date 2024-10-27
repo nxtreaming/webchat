@@ -70,10 +70,10 @@ static int get_full_query_string(struct lws *wsi, char *query_string, size_t max
 }
 
 // Extract token from query string
-static int extract_token_from_query(const char *query_string, const char *token_key, char *token_value) {
+static int extract_token_from_query(const char *query_string, const char *token_key, char *token_value, size_t max_len) {
     if (!token_value)
         return -1;
-    int ret = 0;
+
     token_value[0] = '\0';;
     char *query_copy = strdup(query_string);
     if (!query_copy) {
@@ -81,15 +81,16 @@ static int extract_token_from_query(const char *query_string, const char *token_
         return -1;
     }
 
-    char *token = strtok(query_copy, "&");
+    int ret = -1;
+    char *token = strtok_r(query_copy, "&");
     int key_len = strlen(token_key);
     while (token != NULL) {
         if (strncmp(token, token_key, key_len) == 0) {
-            strcpy(token_value, token + key_len);
-            ret = 1;
+            strncpy(token_value, token + key_len, max_len);
+            ret = 0;
             break;
         }
-        token = strtok(NULL, "&");
+        token = strtok_r(NULL, "&");
     }
 
     free(query_copy);
@@ -100,7 +101,7 @@ static int extract_token_from_query(const char *query_string, const char *token_
 static int extract_client_role_from_query(const char *query_string, const char *token_key) {
     char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, token_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str, sizeof(token_str)-1);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
@@ -131,7 +132,7 @@ static int extract_client_role_from_query(const char *query_string, const char *
 static int64_t extract_client_id_from_query(const char *query_string, const char *token_key) {
     char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, token_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str, sizeof(token_str)-1);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
@@ -152,7 +153,7 @@ static int64_t extract_client_id_from_query(const char *query_string, const char
 static int64_t extract_subscribe_id_from_query(const char *query_string, const char *token_key) {
     char token_str[128] = { 0 };
 
-    int ret = extract_token_from_query(query_string, token_key, token_str);
+    int ret = extract_token_from_query(query_string, token_key, token_str, sizeof(token_str) -1);
     if (ret < 0) {
         lwsl_notice("Fail to find the token: %s\n", token_key);
         return -1;
