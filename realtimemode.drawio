@@ -10,7 +10,7 @@
         <mxCell id="dviLVYzvUiRTf4Ah8dCm-24" value="" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;strokeWidth=2;" vertex="1" parent="1">
           <mxGeometry x="460" y="260" width="420" height="250" as="geometry" />
         </mxCell>
-        <mxCell id="dviLVYzvUiRTf4Ah8dCm-2" value="&lt;font style=&quot;font-size: 15px;&quot;&gt;&lt;b&gt;RTC Client&lt;/b&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;aspect=fixed;fillColor=#dae8fc;gradientColor=#7ea6e0;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="dviLVYzvUiRTf4Ah8dCm-2" value="&lt;font style=&quot;font-size: 15px;&quot;&gt;&lt;b&gt;App Client&lt;/b&gt;&lt;/font&gt;" style="whiteSpace=wrap;html=1;aspect=fixed;fillColor=#dae8fc;gradientColor=#7ea6e0;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="42" y="298" width="160" height="160" as="geometry" />
         </mxCell>
         <mxCell id="dviLVYzvUiRTf4Ah8dCm-3" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;Mic&lt;/b&gt;&lt;/font&gt;" style="text;strokeColor=#d6b656;align=center;fillColor=#fff2cc;html=1;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
